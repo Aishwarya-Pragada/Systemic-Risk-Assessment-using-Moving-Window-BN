@@ -1,0 +1,61 @@
+# Single source of truth for every parameter in Chan, Chu & So (2023), PLOS ONE 18(1): e0279888.
+
+paths:
+  raw_dir: data/raw
+  interim_dir: data/interim
+  processed_dir: data/processed
+  results_dir: results
+
+data:
+  constituents_file: HSI_constituents.csv
+  index_file: HSI_index.csv
+  date_format: "%d-%m-%Y"
+  start_date: "2008-01-02"     # day 0 in the paper (only used to compute the first return)
+  end_date: "2021-11-04"
+  price_column: Close          # HSI closing price
+  expected_trading_days: 3404  # paper: 3,404 trading days -> T = 3403 returns
+  expected_returns: 3403
+  min_nodes: 46                # paper: number of nodes ranges 46 ... 60
+  max_nodes: 60
+  forward_fill_gaps: true      # fill suspension gaps of already-listed stocks (see README)
+  max_forward_fill: null       # null = unlimited
+
+# ---------- parameters used by later stages (taken from the paper) ----------
+bayesian_network:
+  w: 30                        # rolling window for structure learning
+  M: 13                        # max number of parents per node
+  K: 100                       # random initial orders for the median topological order
+  score: BDeu
+
+granger:
+  w_gc: 40
+  lags: [1, 2, 3, 4, 5]
+  alpha: 0.1
+
+lasso:
+  m: 40                        # LASSO training window
+  L_h1: 5                      # lags for H1a, H1b
+  L_h2: 3                      # lags for H2
+  m_prime: 100                 # rolling window for the tail-event percentile
+  percentiles: [99.9, 99, 98]
+
+# ---------- Stage 2: how the networks are learned (NOT specified in the paper; my choices) ----------
+learning:
+  ess: 500.0                     # BDeu equivalent sample size
+  seed: 20230120
+  workers: 10                  # parallel processes (i7-1360P: 12 cores / 16 threads)
+  profiles:
+    light:                     # quick end-to-end check of the whole pipeline
+      C: 10                    # candidate parents per node (search-space restriction)
+      n_chains: 1
+      order_iter: 20000
+      order_burn: 5000
+      thin: 10
+      struct_iter: 20000
+    faithful:                  # final run
+      C: 14
+      n_chains: 2
+      order_iter: 500000
+      order_burn: 100000
+      thin: 50
+      struct_iter: 500000
