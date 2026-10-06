@@ -1,0 +1,13 @@
+# ---- Stage 1 (data + preprocessing) ----
+numpy>=1.24
+pandas>=2.0
+pyyaml>=6.0
+pytest>=7.0
+
+# ---- Later stages (installed now so the environment is final) ----
+scipy>=1.10          # stats utilities
+scikit-learn>=1.3    # LASSO, time-series cross-validation
+statsmodels>=0.14    # Granger-causality style F-tests
+numba>=0.58          # fast BDeu scoring / MCMC
+networkx>=3.1        # graph checks
+matplotlib>=3.7      # figures
