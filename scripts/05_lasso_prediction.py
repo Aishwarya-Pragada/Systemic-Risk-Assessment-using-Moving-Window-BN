@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 """Stage 5: rolling one-day-ahead LASSO predictions and the RMSE tables (Tables 2 and 3 of the paper).
 Needs data/processed/hsi.csv and data/processed/indicators_<profile>.csv.
-Writes data/processed/lasso_predictions_<profile>.csv and lasso_table2_<profile>.csv.
+Writes data/processed/lasso_predictions_<profile>.csv (+ _placebo<shift>.csv) and lasso_table2_<profile>.csv.
+Predictions are saved as soon as they are fitted; with --reuse they are loaded instead of refitted, so
+re-evaluating (e.g. after changing the tail rule) takes seconds.
 
-  python scripts/05_lasso_prediction.py --profile faithful
-  python scripts/05_lasso_prediction.py --profile faithful --placebo     # also refit with shifted indicators
+  python scripts/05_lasso_prediction.py --profile faithful --placebo
+  python scripts/05_lasso_prediction.py --profile faithful --placebo --reuse
 """
 import argparse
 import sys
@@ -34,7 +36,24 @@ PAPER_T2 = {
 }
 PAPER_T3 = {"loss": (43, 73, 105), "abs_ret": (37, 69, 116)}
 PCT = {"0.1%": 99.9, "1%": 99.0, "2%": 98.0}
-PAIRS = [("H1a", "H0_L5"), ("H1b", "H0_L5"), ("H2", "H0_L3")]      # (alternative, its null model)
+# (alternative, its null model)
+PAIRS = [("H1a", "H0_L5"), ("H1b", "H0_L5"), ("H2", "H0_L3")]
+
+
+def save_preds(preds, y, t_first, t_last, path):
+    cols = {"t": np.arange(t_first, t_last + 1)}
+    for resp in preds:
+        cols[f"{resp}_next"] = y[resp][t_first + 1: t_last + 2]
+        for mn, v in preds[resp].items():
+            cols[f"{resp}_{mn}"] = v
+    pd.DataFrame(cols).to_csv(path, index=False)
+
+
+def load_preds(path, y, n):
+    df = pd.read_csv(path)
+    if len(df) != n:
+        return None
+    return {r: {mn: df[f"{r}_{mn}"].to_numpy() for mn in MODELS} for r in y}
 
 
 def evaluate(y, preds, t_first, t_last, m_prime):
@@ -42,13 +61,15 @@ def evaluate(y, preds, t_first, t_last, m_prime):
     out, counts = {}, {}
     for resp in preds:
         truth = y[resp][t_first + 1: t_last + 2]
-        cases = {c: tail_mask(y[resp], t_first, t_last, p, m_prime) for c, p in PCT.items()}
+        cases = {c: tail_mask(y[resp], t_first, t_last, p, m_prime)
+                 for c, p in PCT.items()}
         cases["all"] = None
         counts[resp] = tuple(int(cases[c].sum()) for c in PCT)
         for case, mask in cases.items():
             row = []
             for alt, null in PAIRS:
-                r0, r1 = rmse(preds[resp][null], truth, mask), rmse(preds[resp][alt], truth, mask)
+                r0, r1 = rmse(preds[resp][null], truth, mask), rmse(
+                    preds[resp][alt], truth, mask)
                 row.append((r0, r1, 100.0 * (r1 / r0 - 1.0)))
             out[(resp, case)] = row
     return out, counts
@@ -56,27 +77,56 @@ def evaluate(y, preds, t_first, t_last, m_prime):
 
 def show(res, counts, title):
     print(f"\n{title}")
-    print(f"{'case':>6} {'response':>8} | " + " | ".join(f"{h:^30s}" for h in ("H1a", "H1b", "H2")))
-    print(f"{'':>6} {'':>8} | " + " | ".join(f"{'H0 / alt  (pct)  [paper pct]':^30s}" for _ in range(3)))
+    print(f"{'case':>6} {'response':>8} | " +
+          " | ".join(f"{h:^32s}" for h in ("H1a", "H1b", "H2")))
+    print(f"{'':>6} {'':>8} | " +
+          " | ".join(f"{'H0 / alt  (pct)  [paper pct]':^32s}" for _ in range(3)))
     for case in ("0.1%", "1%", "2%", "all"):
         for resp in ("loss", "abs_ret"):
             cells = []
             for i, (r0, r1, pc) in enumerate(res[(resp, case)]):
                 pp = PAPER_T2[(resp, case)][i][2]
                 cells.append(f"{r0:.4f}/{r1:.4f} ({pc:+5.1f}%) [{pp:+5.1f}%]")
-            print(f"{case:>6} {resp:>8} | " + " | ".join(f"{c:^30s}" for c in cells))
+            print(f"{case:>6} {resp:>8} | " +
+                  " | ".join(f"{c:^32s}" for c in cells))
     print("\nTable 3 (days accepted)   yours -> paper")
     for resp in counts:
         print(f"  {resp:8s} 0.1%/1%/2%: {counts[resp]} -> {PAPER_T3[resp]}")
 
 
+def show_placebo_summary(res_real, res_list, shifts):
+    print(
+        f"\nREAL vs {len(res_list)} PLACEBOS (indicators shifted by {shifts} days)")
+    print("each cell: real % change | placebo mean +- sd | placebos that did at least as well as the real one")
+    print(f"{'case':>6} {'response':>8} | " +
+          " | ".join(f"{h:^34s}" for h in ("H1a", "H1b", "H2")))
+    for case in ("0.1%", "1%", "2%", "all"):
+        for resp in ("loss", "abs_ret"):
+            cells = []
+            for i in range(3):
+                real = res_real[(resp, case)][i][2]
+                pl = np.array([r[(resp, case)][i][2] for r in res_list])
+                sd = pl.std(ddof=1) if len(pl) > 1 else float("nan")
+                cells.append(
+                    f"{real:+5.1f}% | {pl.mean():+5.1f} +-{sd:3.1f} | {int((pl <= real).sum())}/{len(pl)}")
+            print(f"{case:>6} {resp:>8} | " +
+                  " | ".join(f"{c:^34s}" for c in cells))
+
+
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--profile", default="faithful")
     ap.add_argument("--workers", type=int, default=None)
-    ap.add_argument("--placebo", action="store_true", help="also run with the indicators shifted in time")
+    ap.add_argument("--placebo", action="store_true",
+                    help="also run with the indicators shifted in time")
     ap.add_argument("--placebo-shift", type=int, default=1500)
-    ap.add_argument("--limit", type=int, default=None, help="only the first N origins (quick test)")
+    ap.add_argument("--placebo-shifts", type=int, nargs="+", default=None,
+                    help="several shifts, e.g. 500 1000 1500 2000 2500: prints real vs the placebo distribution")
+    ap.add_argument("--reuse", action="store_true",
+                    help="load saved predictions (real and placebo) instead of refitting")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="only the first N origins (quick test)")
     a = ap.parse_args()
 
     cfg = load_config()
@@ -86,36 +136,51 @@ def main():
     t_first, t_last = w + lc["m"], T - 1
     if a.limit:
         t_last = min(t_last, t_first + a.limit - 1)
-    print(f"{t_last - t_first + 1} one-day-ahead predictions (origins t={t_first}..{t_last}), m={lc['m']}, "
+    n_pred = t_last - t_first + 1
+    print(f"{n_pred} one-day-ahead predictions (origins t={t_first}..{t_last}), m={lc['m']}, "
           f"L=5/3, m'={lc['m_prime']}, workers={workers}")
 
-    def run(m_, o_, tag):
+    def fit(m_, o_, tag):
         t0 = time.time()
         preds = rolling_predictions(y, m_, o_, t_first, t_last, m=lc["m"], cv_splits=lc.get("cv_splits", 5),
                                     n_alphas=lc.get("n_alphas", 50), n_jobs=workers)
         print(f"[{tag}] fitted in {(time.time() - t0) / 60:.1f} min")
         return preds
 
-    preds = run(mnd, od, "real")
+    def get(m_, o_, tag, path):
+        """Load saved predictions if --reuse and available, otherwise fit and save immediately."""
+        got = load_preds(path, y, n_pred) if (
+            a.reuse and path.exists()) else None
+        if got is not None:
+            print(f"[{tag}] re-using saved predictions ({path.name})")
+            return got
+        got = fit(m_, o_, tag)
+        save_preds(got, y, t_first, t_last, path)
+        return got
+
+    pdir = Path(cfg["paths"]["processed_dir"])
+    preds = get(mnd, od, "real", pdir / f"lasso_predictions_{a.profile}.csv")
     res, counts = evaluate(y, preds, t_first, t_last, lc["m_prime"])
     show(res, counts, "YOUR TABLE 2  (RMSE of H0 / alternative, % change; paper's % change in brackets)")
 
-    pdir = Path(cfg["paths"]["processed_dir"])
-    cols = {"t": np.arange(t_first, t_last + 1)}
-    for resp in preds:
-        cols[f"{resp}_next"] = y[resp][t_first + 1: t_last + 2]
-        for mn, v in preds[resp].items():
-            cols[f"{resp}_{mn}"] = v
-    pd.DataFrame(cols).to_csv(pdir / f"lasso_predictions_{a.profile}.csv", index=False)
     rows = [(resp, case, alt, r0, r1, pc) for (resp, case), row in res.items()
             for (alt, _), (r0, r1, pc) in zip(PAIRS, row)]
     pd.DataFrame(rows, columns=["response", "case", "model", "rmse_H0", "rmse_alt", "pct_change"]).to_csv(
         pdir / f"lasso_table2_{a.profile}.csv", index=False)
 
-    if a.placebo:
-        m2, o2 = shifted(mnd, od, w, T, a.placebo_shift)
-        res0, _ = evaluate(y, run(m2, o2, "placebo"), t_first, t_last, lc["m_prime"])
-        show(res0, counts, f"PLACEBO TABLE 2 (indicators shifted by {a.placebo_shift} days = what chance gives)")
+    shifts = a.placebo_shifts or ([a.placebo_shift] if a.placebo else [])
+    res_pl = []
+    for sh in shifts:
+        m2, o2 = shifted(mnd, od, w, T, sh)
+        pl = get(m2, o2, f"placebo shift {sh}", pdir /
+                 f"lasso_predictions_{a.profile}_placebo{sh}.csv")
+        res_s, _ = evaluate(y, pl, t_first, t_last, lc["m_prime"])
+        res_pl.append(res_s)
+        if len(shifts) == 1:
+            show(
+                res_s, counts, f"PLACEBO TABLE 2 (indicators shifted by {sh} days = what chance gives)")
+    if len(shifts) > 1:
+        show_placebo_summary(res, res_pl, shifts)
     print(f"\nsaved to {pdir}")
 
 

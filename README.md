@@ -7,7 +7,7 @@ systemic risk in financial markets", PLOS ONE 18(1): e0279888** on the provided 
 | Stage | Status | Script |
 |-------|--------|--------|
 | 1. Data + preprocessing (prices, log-returns, binary indicators, HSI Loss / abs-return) | done | `scripts/01_preprocess.py` |
-| 2. Rolling-window Bayesian network learning (Structure MCMC + Order MCMC, BDeu, M=13, w=30) | next | |
+| 2. Rolling-window Bayesian network learning (Structure MCMC + Order MCMC, BDeu, M=13, w=30) | done | `scripts/02_learn_networks.py` |
 | 3. Network density MND (Eq. 4), topological orders (Kahn, K=100), RM (Eq. 5), NT (Eq. 6), order distance (Eq. 7) | | |
 | 4. Granger-causality tests (w_GC=40, L=1..5, alpha=0.1; Eq. 9-10; Table 1) | | |
 | 5. Rolling LASSO prediction + tail-event RMSE (m=40, m'=100; Eq. 11-12; Tables 2-3) | | |
@@ -38,6 +38,18 @@ python -m pytest -q                    # sanity tests against the paper's report
 5. **Node set per window** `Dataset.window(t, w)` keeps only stocks with a valid indicator on every day of
    D_{(t-w+1):t}. Node count goes 46 -> 60 and is non-decreasing.
 6. **HSI series.** Close from `HSI_index.csv`; `abs_ret` = |R_t|; `loss` = -min(R_t, 0).
+
+## Stage 2: learning the networks
+```bash
+python scripts/02_learn_networks.py --profile light --benchmark   # times 3 days, writes nothing
+python scripts/02_learn_networks.py --profile light               # all 3,374 days, resumable
+python scripts/02_learn_networks.py --profile faithful            # final run
+```
+Output: `data/interim/networks/<profile>/net_<t>.npz` (one per day: nodes, adjacency, BDeu score).
+Re-running skips finished days. The paper does not specify the sampler settings; the choices (candidate
+parents C, BDeu equivalent sample size, iteration counts) are in `config/config.yaml` under `learning`.
+Method: top-C candidate parents per node by pairwise BDeu gain; exact parent-set sums inside that space
+(max M parents); Order MCMC, then Structure MCMC from the best DAG; keep the highest-BDeu DAG.
 
 ## Layout
 See `config/config.yaml` for every parameter taken from the paper.
