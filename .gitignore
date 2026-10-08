@@ -5,6 +5,7 @@ __pycache__/
 data/interim/*
 data/processed/*
 results/*
+!results/figures/
+!results/figures/*.png
 !**/.gitkeep
-
 .venv/
