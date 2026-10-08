@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from bnsr.config import load_config                                      # noqa: E402
 from bnsr.evaluation.lasso import MODELS, rolling_predictions            # noqa: E402
-from bnsr.evaluation.metrics import rmse, tail_mask                      # noqa: E402
+from bnsr.evaluation.metrics import paired_tail_test, rmse, tail_mask                      # noqa: E402
 from bnsr.evaluation.series import load_series, shifted                  # noqa: E402
 
 # Paper Table 2: (response, case) -> [(H0, alt, pct) for H1a, H1b, H2]
@@ -113,6 +113,24 @@ def show_placebo_summary(res_real, res_list, shifts):
                   " | ".join(f"{c:^34s}" for c in cells))
 
 
+def show_paired_tests(y, preds, t_first, t_last, m_prime):
+    print("\nPAIRED TEST on the tail days (real indicators): % change in RMSE, 95% bootstrap interval, "
+          "one-sided p that the alternative is better")
+    print(f"{'case':>6} {'response':>8} {'days':>5} | " +
+          " | ".join(f"{h:^36s}" for h in ("H1a", "H1b", "H2")))
+    for case, pc in PCT.items():
+        for resp in ("loss", "abs_ret"):
+            mask = tail_mask(y[resp], t_first, t_last, pc, m_prime)
+            truth = y[resp][t_first + 1: t_last + 2]
+            cells = []
+            for alt, null in PAIRS:
+                ch, t, p, lo, hi = paired_tail_test(
+                    preds[resp][null], preds[resp][alt], truth, mask)
+                cells.append(f"{ch:+5.1f}% [{lo:+5.1f},{hi:+5.1f}] p={p:.2f}")
+            print(f"{case:>6} {resp:>8} {int(mask.sum()):>5} | " +
+                  " | ".join(f"{c:^36s}" for c in cells))
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -123,6 +141,10 @@ def main():
     ap.add_argument("--placebo-shift", type=int, default=1500)
     ap.add_argument("--placebo-shifts", type=int, nargs="+", default=None,
                     help="several shifts, e.g. 500 1000 1500 2000 2500: prints real vs the placebo distribution")
+    ap.add_argument("--paired-test", action="store_true",
+                    help="paired significance test of each alternative vs its null on the tail days")
+    ap.add_argument("--m-prime", type=int, default=None,
+                    help="rolling window of the tail-event percentile (default: config, 100); S7 uses 40 and 60")
     ap.add_argument("--reuse", action="store_true",
                     help="load saved predictions (real and placebo) instead of refitting")
     ap.add_argument("--limit", type=int, default=None,
@@ -130,7 +152,9 @@ def main():
     a = ap.parse_args()
 
     cfg = load_config()
-    w, lc = cfg["bayesian_network"]["w"], cfg["lasso"]
+    w, lc = cfg["bayesian_network"]["w"], dict(cfg["lasso"])
+    if a.m_prime:
+        lc["m_prime"] = a.m_prime
     workers = a.workers or cfg["learning"]["workers"]
     y, mnd, od, dates, T = load_series(cfg, a.profile)
     t_first, t_last = w + lc["m"], T - 1
@@ -162,6 +186,9 @@ def main():
     preds = get(mnd, od, "real", pdir / f"lasso_predictions_{a.profile}.csv")
     res, counts = evaluate(y, preds, t_first, t_last, lc["m_prime"])
     show(res, counts, "YOUR TABLE 2  (RMSE of H0 / alternative, % change; paper's % change in brackets)")
+
+    if a.paired_test:
+        show_paired_tests(y, preds, t_first, t_last, lc["m_prime"])
 
     rows = [(resp, case, alt, r0, r1, pc) for (resp, case), row in res.items()
             for (alt, _), (r0, r1, pc) in zip(PAIRS, row)]

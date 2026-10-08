@@ -68,3 +68,20 @@ def test_alternative_beats_null_when_indicator_is_informative():
     assert set(P) == set(MODELS) and all(len(v) == 61 for v in P.values())
     assert rmse(P["H1b"], truth) < 0.7 * rmse(P["H0_L5"], truth)
     assert rmse(P["H2"], truth) < 0.8 * rmse(P["H0_L3"], truth)
+
+
+def test_paired_tail_test_detects_a_real_improvement():
+    from bnsr.evaluation.metrics import paired_tail_test
+    rng = np.random.default_rng(3)
+    truth = rng.normal(size=400)
+    # alternative: small errors
+    good = truth + 0.3 * rng.normal(size=400)
+    bad = truth + 1.0 * rng.normal(size=400)            # null: large errors
+    mask = np.ones(400, dtype=bool)
+    ch, t_, p, lo, hi = paired_tail_test(bad, good, truth, mask, n_boot=500)
+    assert ch < -50 and t_ > 5 and p < 0.001 and hi < 0
+    ch2, t2, p2, lo2, hi2 = paired_tail_test(
+        good, bad, truth, mask, n_boot=500)
+    assert ch2 > 50 and p2 > 0.999
+    same = paired_tail_test(bad, bad, truth, mask, n_boot=200)
+    assert abs(same[0]) < 1e-9
